@@ -509,6 +509,241 @@ Commit.
 
 `r10k deploy environment --puppetfile`
 
+`puppet agent --test`
+
 *This will take a long time to run.*
 
+I saw "Error: Could not find a suitable provider for docker_network" and tried again and it works.  Perhaps [this](https://github.com/puppetlabs/puppetlabs-docker/issues/703) issue?
+
+## Expand site.pp
+
+
+Match any node starting with node, using a regexp.
+
+Edit **manifests/site.pp**:
+
+```ruby
+node /^web/ {
+  include role::app_server
+}
+
+node /^db/ {
+  include role::db_server
+}
+```
+
+Commit.
+
+Deploy on master:
+
+`r10k deploy environment --puppetfile`
+
+*No need to run puppet -- the code we changed only applies to web and db nodes.*
+
+## Connect agents to master
+
+### Connect web node to master
+
 `puppet agent --test`
+
+Log in to "web" node using docker:
+
+`docker exec -it web.puppet.vm bash`
+
+Run puppet agent:
+
+`puppet agent --test`
+
+Should get: "Couldn't fetch certificate from CA server; you might still need to sign this agent's certificate (web.puppet.vm)" as certificate isn't set.
+
+`exit`
+
+Sign cert on master:
+
+`puppetserver ca list`
+Shows all certs waiting signing.
+
+`puppetserver ca sign --certname web.puppet.vm`
+Sign the cert - can also use "--all"
+
+Log into node again:
+
+`docker exec -it web.puppet.vm bash`
+
+`puppet agent --test`
+
+`exit`
+
+### Connect db node to master
+
+Perform same steps as above, but use db.puppet.vm
+
+## Orchestration
+
+### MCollective package
+
+Documentation is [here](https://puppet.com/docs/mcollective/currentl)
+
+bundled with puppet (marrionette collective). can trigger puppet run or more complex scnearios.
+pub-sub model.
+
+Tolerant of spotty network connections
+
+Can't guarantee that a machine received a message
+
+### Ansible
+
+Homepage is [here](https://www.ansible.com/)
+
+Ansible uses SSH to connect to nodes.
+
+Puppet for desired state, ansible for orchestration and procedural paths
+
+### SSH in "for" loop
+
+Connect to each in a loop
+
+Puppet manages SSH keys.
+
+Simple approach
+
+### Puppet Bolt
+
+Homepage is [here](https://puppet.com/docs/bolt)
+
+Agent-less (uses SSH)
+
+Not widely used yet - difficult to learn, other options have same functionality.
+
+Made to integrate with puppet.  Can create bolt tasks that integrate with their module.
+
+Can integrate with [PuppetDB](https://puppet.com/docs/puppetdb) - database for puppet managed systems
+
+## Puppet Run
+
+1. Agent launches "facter" to collect details about system
+2. Sends to master
+3. Master looks up details, creates catalog
+4. Catalog defines what should occur on a device and in what order
+5. Agent takes catalog, enforces changes on node (e.g. install software package, configure user)
+6. Agent sends report of run to master
+   1. metadata
+   2. status
+   3. events
+   4. logs
+   5. metrics of run
+
+## Facter
+
+Run `facter` on master
+
+`facter timezone`
+
+`facter fqdn`
+
+`facter os`, `facter os.family`
+
+These are facts that can be used in puppet code.
+
+### Add to site.pp
+
+Edit **/manifests/site.pp**, in node 'master.puppet.vm', add
+
+```ruby
+  file { '/root/README':
+    ensure => file,
+    content => "Welcome to ${fqdn}\n",
+  }
+```
+
+Commit.
+
+*Note that facts are just preset variables.*
+
+Deploy and run code:
+
+`r10k deploy environment --puppetfile`
+
+`puppet agent --test`
+
+`cat /root/README`
+
+## Install SSH and add hosts
+
+Generate SSH key pair on master:
+
+`ssh-keygen` - leave keyphrase blank
+
+`cat /root/.ssh/id_rsa.pub` - copy "middle" part
+
+Create **site/profile/manifests/ssh_server.pp**:
+
+```ruby
+class profile::ssh_server {
+  package { 'openssh-server':
+    ensure => present,
+  }
+  service { 'sshd':
+    ensure => 'running',
+    enable => 'true',
+  }
+  ssh_authorized_key { 'root@master.puppet.vm':
+    ensure => present,
+    user => 'root',
+    type => 'ssh-rsa',
+    key => 'AAAAB...[paste key here]',
+    }
+}
+```
+
+Commit.
+
+Add to base profile **site/profile/manifests/base.pp**:
+
+```ruby
+  include profile::ssh_server
+```
+
+Commit.
+
+## Add host entries for nodes
+
+*Note: In production, you'd use DNS.*
+
+facter can get IP addresses of nodes.
+
+`docker exec -it web.puppet.vm facter ipaddress`
+
+`docker exec -it db.puppet.vm facter ipaddress`
+
+Edit **site/profile/manifests/agent_nodes.pp**:
+
+```ruby
+  host { 'web.puppet.vm':
+    ensure => present,
+    ip => '[webip_address]',
+  }
+  host { 'db.puppet.vm':
+    ensure => present,
+    ip => '[db ip_address]',
+  }
+```
+
+Commit.
+
+Deploy and run code:
+
+`r10k deploy environment --puppetfile`
+
+`puppet agent --test`
+
+`docker exec -it db.puppet.vm puppet agent --test`
+
+"Notice: /Stage[main]/Profile::Ssh_server/Ssh_authorized_key[root@master.puppet.vm]/ensure: created"
+
+`docker exec -it web.puppet.vm puppet agent --test`
+
+## Log in
+
+`ssh web.puppet.vm` now works!
+
