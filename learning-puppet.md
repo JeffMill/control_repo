@@ -205,7 +205,7 @@ Install tool to deploy puppetcode from github onto server:
         basedir: '/etc/puppetlabs/code/environments'
 ```
 
-`r10k deploy environment -p`
+`r10k deploy environment --puppetfile`
 
 `cat /etc/puppetlabs/code/environments/production/README.md`
 
@@ -225,7 +225,7 @@ node default {
 
 Click "Commit New File"
 
-`r10k deploy environment -p`
+`r10k deploy environment --puppetfile`
 
 `ls /etc/puppetlabs/code/environments/production/manifests`
 
@@ -274,3 +274,241 @@ class dev_environment {
   }
 }
 ```
+
+site.pp could include a classification to define a default class, e.g.
+
+```ruby
+node default {
+  class { 'dev_environment':
+    ensure => present,
+  }
+}
+```
+
+Could also use "include" keyword, e.g.
+
+```ruby
+node default {
+  include dev_environment
+}
+node 'grace.puppet.vm' {
+  include dev_environment
+}
+```
+
+## PuppetForge
+
+puppetforge is [here](https://forge.puppet.com) and contains pre-written reusable modules, e.g. [wsus_client](https://forge.puppet.com/modules/puppetlabs/wsus_client)
+
+Different levels of modules: Supported, Partner, Approved, Community - define level of support.
+
+### NGINX module
+
+[This module](https://forge.puppet.com/modules/puppet/nginx) is for managing NGINX WWW service.
+
+Supports multiple platforms (redhat, ubuntu) and accounts for platform differences.
+
+Can be used with [Bolt](https://puppet.com/docs/bolt), an orchestration tool written by puppet - typically used for one-time, adhoc operations vs. the more typical puppet approach of managing system state. More details about Bolt later.
+
+Can also be installed using r10k by putting a declaration in "Puppetfile":
+
+```ruby
+mod 'puppet-nginx', '3.0.0'
+```
+
+Also can install module manually using "puppet module".
+
+Has link to a [quick start guide](https://github.com/voxpupuli/puppet-nginx/blob/master/docs/quickstart.md)
+
+Modules have a module dependency chain. For example, nginx depends on puppetlabs/concat and puppetlabs/stdlib.
+
+## Add NGINX module
+
+In control_repo, click Add File > Create New File, name **Puppetfile** (capital "P")
+
+```ruby
+mod 'puppet/nginx', '1.0.0'
+mod 'puppetlabs/concat'
+mod 'puppetlabs/stdlib'
+mod 'puppetlabs/translate'
+```
+
+Commit.
+
+*Note that we're pinning to nginx v1.0.0 and specifying the dependent modules as well.*
+
+## Create Profiles
+
+**Profiles**: building block of configuration. Wrapper for subset of configuration. Limited to single unit of configuration.
+
+**Roles**: Business role of a machine. One role per machine. Made up of profiles.
+
+"Space is cheap. Confusion is expensive."
+
+In control_repo root, click Add File > Create New File, name **site/profile/manifests/web.pp**:
+
+```ruby
+class profile::web {
+  include nginx
+}
+```
+
+Commit.
+
+Create **app.pp** (in site/profile/manifests):
+
+```ruby
+class profile::app {
+}
+```
+
+Commit.
+
+Create **db.pp** (in site/profile/manifests):
+
+```ruby
+class profile::db {
+}
+```
+
+Commit.
+
+Create **base.pp** (in site/profile/manifests):
+
+```ruby
+class profile::base {
+  user { 'admin':
+    ensure => present,
+  }
+}
+```
+
+Commit.
+
+## Group Profiles into Roles
+
+(note "role" folder instead of "profile")
+
+In control_repo root, click Add File > Create New File, name **site/role/manifests/app_server.pp**:
+
+```ruby
+class role::app_server {
+  include profile::app
+  include profile::base
+  include profile::web
+}
+```
+
+Commit.
+
+Create **db_server.pp** (in site/role/manifests):
+
+```ruby
+class role::db_server {
+  include profile::base
+  include profile::db
+}
+```
+
+Commit.
+
+Create **master_server.pp** (in site/role/manifests):
+
+```ruby
+class role::master_server {
+  include profile::base
+}
+```
+
+Commit.
+
+If features were to be added to all roles, we can just add to "base" profile.
+
+To split "app" and "web" servers to  different machines, we could define two new roles that wrap just those profiles.
+
+## Specify location of custom profiles
+
+Create **environment.conf** (in root of control_repo):
+
+```ini
+modulepath = site:modules:$basemodulepath
+```
+
+**site**: where we created roles and profiles
+
+**modules**: where r10k deploys forge modules
+
+**$basemodulepath**: where puppet internal modules are stored.
+
+Commit.
+
+## Create node definition only for master, and give master_server role
+
+Edit **manifests/site.pp**:
+
+```ruby
+node 'master.puppet.vm' {
+  include role::master_server
+}
+```
+
+Commit.
+
+Note: A node only matches one node definition. There is no inheritance between node definitions.  With this specific node, master will now no longer match default.
+
+## Manage Nodes
+
+Rather than spin up additional VMs, "dockeragent" module can spin up simulated puppet nodes.
+
+Installs docker on master and sets up containers that act as puppet nodes.
+
+[Original version](https://forge.puppet.com/modules/pltraining/dockeragent) (not used in training)
+
+[Forked version](https://forge.puppet.com/modules/samuelson/dockeragent)
+
+Depends on puppetlabs/docker which depends on several modules (stdlib, translate, apt, powershell, reboot) - the latter two are Windows specific.  apt is debian specific.
+
+In control_repo, edit **Puppetfile**, add:
+
+```ruby
+mod 'samuelson/dockeragent'
+mod 'puppetlabs/docker'
+```
+
+(file already has stdlib and translate modules included from previous step)
+
+Commit.
+
+In control_repo root, click Add File > Create New File, name **site/profile/manifests/agent_nodes.pp**:
+
+```ruby
+class profile::agent_nodes {
+  include dockeragent
+  dockeragent::node {
+    'web.puppet.vm':
+  }
+  dockeragent::node {
+    'db.puppet.vm':
+  }
+}
+```
+
+This will create a "web" and a "db" node.
+
+Commit.
+
+Add profile to master_server role by editing **master_server.pp** (in site/role/manifests):
+
+```ruby
+  include profile::agent_nodes
+```
+
+Commit.
+
+## Deploy
+
+`r10k deploy environment --puppetfile`
+
+*This will take a long time to run.*
+
+`puppet agent --test`
