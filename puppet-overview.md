@@ -4,6 +4,8 @@ Puppet home page is [here](https://puppet.com)
 
 Good tutorial is [here](https://www.tutorialspoint.com/puppet)
 
+Set of slides with overview (although a bit more like a reference guide) is [here](https://blog.example42.com/tutorials/PuppetTutorial/)
+
 ## configuration management overview
 
 install server, configure server - requires a number of scripts
